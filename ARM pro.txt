@@ -1,0 +1,250 @@
+#include<lpc17xx.h>
+#include<stdio.h>
+#include<stdlib.h>
+
+#define U LPC_UART0
+#define P LPC_SC
+#define C LPC_PINCON
+#define A LPC_ADC
+#define L LPC_GPIO0
+#define LED LPC_GPIO1
+#define PW LPC_PWM1
+
+char M;
+int i,j;
+
+void delay()
+{
+    int i,j;
+	for(i=0;i<1000;i++)  for(j=0;j<500;j++);
+}
+
+void pll()
+{
+	P->SCS=(1<<5);
+	while((P->SCS&(1<<6))==0);
+	P->CLKSRCSEL=(1<<0);
+	P->PLL0CON=(1<<0);
+	P->PLL0CFG=14;
+	P->PLL0FEED=(0XAA);
+	P->PLL0FEED=(0X55);
+	P->CCLKCFG=(5<<0);
+	while((P->PLL0STAT & (1<<26))==0);
+	P->PLL0CON|=(1<<1);
+	P->PLL0FEED=(0XAA);
+	P->PLL0FEED=(0X55);
+}
+
+void UART0_Write(char TX)
+{
+	while((U->LSR&(1<<5))==0);
+	U->THR=TX ;
+}
+
+char UART0_read()
+{
+	char RX;
+	while((U->LSR&(1<<0))==0);
+	RX=U->RBR;
+	return RX;
+}
+
+void uart_initfun()
+{
+	U->LCR=(1<<0)|(1<<1);
+	U->LCR|=(1<<7);
+	U->DLL=97;
+	U->DLM=0;
+	U->LCR&=~(1<<7);
+}
+
+void dc_pwm(int x)
+{
+	PW->TCR=(1<<0)|(1<<2);
+	PW->PR=0X0;
+	PW->MCR=(1<<1);
+	PW->MR0=100;
+	PW->MR2=x;
+	PW->LER=(1<<0)|(1<<2);
+	PW->PCR=(1<<10);
+}
+
+void gassensor()
+{
+	int gas; char b[4],c[]="Gas=";
+	A->ADCR=(1<<1)|(5<<8)|(1<<21)|(1<<24);
+	while(((A->ADDR1&(1U<<31))==0));
+	gas=(A->ADDR1&(0XFFF<<4)>>4);
+	gas=((gas*100)/4096) ;
+	sprintf(b,"%d",gas);
+	for(i=0;c[i]!='\0';i++)  UART0_Write(c[i]);
+	for(i=0;b[i]!='\0';i++)  UART0_Write(b[i]);
+	UART0_Write('%');  UART0_Write('\r');  UART0_Write('\n');
+	if(gas>=4)  L->FIOSET=(1<<7);
+}
+
+void tempsensor()
+{
+	char b[4],t[]="Temperature="; int temp=0;int result=0;
+	A->ADCR |=(1<<0)|(1<<8)|(1<<21)|(1<<24);
+	while(((A->ADDR0&(1U<<31))==0));
+	result=(A->ADDR0>>4) & 0xFFF;
+    temp = (result * 3.3 * 100)/4096*1/22;
+	sprintf(b,"%d",temp);
+	for(i=0;t[i]!='\0';i++) UART0_Write(t[i]);
+	for(i=0;b[i]!='\0';i++) UART0_Write(b[i]);
+	UART0_Write('C'); UART0_Write('\r'); UART0_Write('\n');
+	if(temp>25)  dc_pwm(90);
+	else  dc_pwm(40);
+}
+
+void clk(int x)
+{
+    int i;
+	for(i=0;i<(x/7.2);i++)
+	{
+		L->FIOSET=(1<<15);		  
+		delay();
+		L->FIOCLR=(1<<15);
+		L->FIOSET=(1<<16);
+		delay();
+		L->FIOCLR=(1<<16);
+		L->FIOSET=(1<<17);
+		delay();
+		L->FIOCLR=(1<<17);
+		L->FIOSET=(1<<18);
+		delay();
+		L->FIOCLR=(1<<18);
+		delay();
+	}
+}
+
+void anti_clk(int x)
+{
+    int i;
+	for(i=0;i<(x/7.2);i++)
+	{
+		L->FIOSET=(1<<18);
+		delay();
+		L->FIOCLR=(1<<18);
+		L->FIOSET=(1<<17);
+		delay();
+		L->FIOCLR=(1<<17);
+		L->FIOSET=(1<<16);
+		delay();
+		L->FIOCLR=(1<<16);
+		L->FIOSET=(1<<15);
+		delay();
+		L->FIOCLR=(1<<15);
+		delay();
+	}
+}
+
+void irsensor()
+{
+	char b[]="Object is detected..\r\n";
+	char c[]="No Object!!..\r\n";
+	if((LED->FIOPIN&(1<<20))==0)
+	{
+		for(i=0;c[i]!='\0';i++)  UART0_Write(c[i]);
+		anti_clk(90);
+	}
+	else
+	{
+		for(i=0;b[i]!='\0';i++)  UART0_Write(b[i]);
+		clk(90);
+	}
+}
+
+void dcmotor_m()
+{
+	int duty=0; char d[4];
+	char dat[]="Enter the duty cycle:";
+	for(j=0;dat[j]!='\0';j++)  UART0_Write(dat[j]); 
+	for(i=0;i<3;i++)
+	{
+		d[i]=UART0_read();
+		UART0_Write(d[i]);
+	}  d[i]='\0';   
+	UART0_Write('\r'); UART0_Write('\n');
+	for(j=0;d[j]!='\0';j++)  duty=((duty*10)+(d[j]-'0'));
+	dc_pwm(duty);
+}
+
+void stepper()
+{
+	int num=0;  char c[4];
+	char data[]="Enter the angle:";    
+	for(j=0;data[j]!='\0';j++)  UART0_Write(data[j]); 
+	for(i=0;i<3;i++)
+	{
+		c[i]=UART0_read();
+		UART0_Write(c[i]);
+	} c[i]='\0'; 
+	UART0_Write('\r'); UART0_Write('\n'); 
+	for(j=0;c[j]!='\0';j++)  num=((num*10)+(c[j]-'0'));
+	clk(num);
+}
+
+void manual()
+{
+	char data[]="d for dc motor/ s for stepper motor:"; char d; 
+	char data1[]="Dc motor is selected\r\n"; char data2[]="No motor is selected!\r\n";
+	char data3[]="Stepper motor is selected\r\n"; char da[]="Do you want to continue any motor?- y or n:"; 
+    begin2: 
+	for(j=0;data[j]!='\0';j++)  UART0_Write(data[j]); 
+	d=UART0_read();  UART0_Write(d); UART0_Write('\r'); UART0_Write('\n');
+	switch(d)
+	{
+		case 'd': for(j=0;data1[j]!='\0';j++) UART0_Write(data1[j]); dcmotor_m(); break;
+		case 's': for(j=0;data3[j]!='\0';j++) UART0_Write(data3[j]); stepper(); break;
+		case 'Q': PW->MR2=0; L-> FIOCLR= (1<<7); break;
+		default:  for(j=0;data2[j]!='\0';j++) UART0_Write(data2[j]);
+	}  
+	for(j=0;da[j]!='\0';j++)  UART0_Write(da[j]);  
+	M=UART0_read();  UART0_Write(M);  UART0_Write('\r');  UART0_Write('\n'); 
+	if(M=='y') goto begin2;
+	if(M=='Q')
+	{
+		PW->MR2=0; L-> FIOCLR= (1<<7);
+	}
+}
+
+int main()
+{
+	int j; char e[]="Thank you!"; char data[]="Enter the mode- M for manual, A for auto:";
+	char data1[]="It is Manual mode..\r\n";	char data2[]="No mode is selected!\r\n";  
+	char data3[]="It is Auto mode..\r\n"; char da[]="Do you want to continue the mode?:y or n:";
+	P->PCONP|=(1<<12); C->PINSEL0=(1<<4)|(1<<6);
+	C->PINSEL4=(1<<2); C->PINSEL1=(1<<16)|(1<<14);
+	L->FIODIR=(3<<6)|(0xf<<15);
+	L->FIOCLR=(3<<6)|(0xf<<15);
+
+	pll(); uart_initfun();
+	while(1)
+	{
+		begin1:
+		for(j=0;data[j]!='\0';j++)  UART0_Write(data[j]);
+		M=UART0_read(); UART0_Write(M); UART0_Write('\r'); UART0_Write('\n');
+		switch(M)
+		{
+			case 'M': for(j=0;data1[j]!='\0';j++) UART0_Write(data1[j]);  manual(); break;
+			case 'A': for(j=0;data3[j]!='\0';j++) UART0_Write(data3[j]);  tempsensor();	gassensor(); irsensor(); break;
+			case 'Q': PW->MR2=0; L-> FIOCLR= (1<<7); break;
+			default:  for(j=0;data2[j]!='\0';j++)  UART0_Write(data2[j]);         
+		}
+		for(j=0;da[j]!='\0';j++)  UART0_Write(da[j]);
+		M=UART0_read();UART0_Write(M); UART0_Write('\r'); UART0_Write('\n'); 
+		if(M=='y') goto begin1;
+		if(M=='n') 
+		{
+			for(j=0;e[j]!='\0';j++)  UART0_Write(e[j]);
+			exit(0);
+		}
+		if(M=='Q')
+		{
+			PW->MR2=0;
+			L->FIOCLR=(1<<7); 
+		}
+	}   
+}
